@@ -39,6 +39,44 @@ def calculate_cosine_similarities(
 
 
 # ---------------------------- Gemini APIs ----------------------------
+
+@st.cache_data(show_spinner=False, ttl=300)
+def get_available_models(api_key: str) -> List[str]:
+    """Fetch available models from Gemini API that support generateContent.
+    Cached for 5 minutes to avoid excessive API calls.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        
+        models = []
+        if "models" in result:
+            for model in result["models"]:
+                # Only include models that support generateContent
+                if "generateContent" in model.get("supportedGenerationMethods", []):
+                    # Extract model name (e.g., "models/gemini-1.5-flash" -> "gemini-1.5-flash")
+                    model_name = model.get("name", "").replace("models/", "")
+                    if model_name:
+                        models.append(model_name)
+        
+        # Sort models with preview/experimental first, then by version
+        models.sort(reverse=True)
+        return models if models else ["gemini-3-flash-preview"]  # Fallback
+    except Exception as e:
+        st.warning(f"Could not fetch models from API: {e}. Using default list.")
+        # Fallback to a default list
+        return [
+            "gemini-3-flash-preview",
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-flash-8b",
+            "gemini-1.5-pro",
+            "gemini-1.5-pro-002",
+        ]
+
 @st.cache_data(show_spinner=False)
 def get_gemini_embeddings(
     texts: Tuple[str, ...], api_key: str
@@ -73,7 +111,7 @@ def get_gemini_embeddings(
 
 @st.cache_data(show_spinner=False)
 def query_fanout_and_rank(
-    keyword: str, language: str, top_n: int, api_key: str, temperature: float, top_k: int, top_p: float, max_output_tokens: int
+    keyword: str, language: str, top_n: int, api_key: str, model: str, temperature: float, top_k: int, top_p: float, max_output_tokens: int
 ) -> Optional[Tuple[List[str], List[float], Optional[str]]]:
     """Generate 10 questions using Gemini generate API and rank them by cosine similarity.
     Returns top_n questions plus their similarity scores and the raw text response (when available).
@@ -98,7 +136,7 @@ def query_fanout_and_rank(
         },
     }
 
-    gen_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={api_key}"
+    gen_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
 
     raw_text: Optional[str] = None
@@ -189,14 +227,53 @@ def main():
             "Keyword", value="", placeholder="Enter a keyword to analyze"
         )
         language = st.text_input(
-            "Language", value="English", placeholder="e.g., English, Polish"
+            "Language", value="Polish", placeholder="e.g., English, Polish"
         )
-        top_n = st.slider("Top N results", 1, 10, 5)
+        
+        # API Key - placed early so it can be used for model fetching
         api_key = st.text_input(
             "Gemini API Key",
             type="password",
             help="Enter your Gemini API key (kept only in browser session)",
         )
+        
+        # Model selection with refresh capability
+        st.markdown("---")
+        col1, col2 = st.columns([4, 1])
+        
+        with col1:
+            # Get available models (will use cached result or fetch from API)
+            if "available_models" not in st.session_state:
+                st.session_state.available_models = None
+            
+            # Use cached models or default list
+            available_models = st.session_state.available_models or [
+                "gemini-3-flash-preview",
+                "gemini-2.0-flash-exp",
+                "gemini-1.5-flash",
+                "gemini-1.5-flash-002",
+                "gemini-1.5-flash-8b",
+                "gemini-1.5-pro",
+                "gemini-1.5-pro-002",
+            ]
+            
+            # Ensure gemini-3-flash-preview is first if present
+            if "gemini-3-flash-preview" in available_models:
+                available_models.remove("gemini-3-flash-preview")
+                available_models.insert(0, "gemini-3-flash-preview")
+            
+            model = st.selectbox(
+                "Model",
+                options=available_models,
+                index=0,
+                help="Select the Gemini model to use for generation"
+            )
+        
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)  # Align button with selectbox
+            refresh_clicked = st.form_submit_button("🔄", help="Refresh model list from API")
+        
+        top_n = st.slider("Top N results", 1, 10, 5)
         
         # Generation Config Parameters
         with st.expander("⚙️ Generation Config", expanded=False):
@@ -235,6 +312,16 @@ def main():
         
         show_raw = st.checkbox("Show raw model text response")
         submit = st.form_submit_button("Generate")
+    
+    # Handle refresh button click outside form to avoid conflicts
+    if refresh_clicked:
+        if api_key:
+            # Clear cache and fetch fresh models
+            get_available_models.clear()
+            st.session_state.available_models = get_available_models(api_key)
+            st.rerun()
+        else:
+            st.warning("⚠️ Enter API key first to refresh models")
 
     if submit:
         if not keyword:
@@ -245,7 +332,7 @@ def main():
             return
 
         with st.spinner("Generating questions and computing similarities..."):
-            result = query_fanout_and_rank(keyword, language, top_n, api_key, temperature, top_k, top_p, max_output_tokens)
+            result = query_fanout_and_rank(keyword, language, top_n, api_key, model, temperature, top_k, top_p, max_output_tokens)
 
         if result:
             questions, scores, raw_text = result
