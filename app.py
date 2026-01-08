@@ -73,7 +73,7 @@ def get_gemini_embeddings(
 
 @st.cache_data(show_spinner=False)
 def query_fanout_and_rank(
-    keyword: str, language: str, top_n: int, api_key: str
+    keyword: str, language: str, top_n: int, api_key: str, temperature: float, top_k: int, top_p: float, max_output_tokens: int
 ) -> Optional[Tuple[List[str], List[float], Optional[str]]]:
     """Generate 10 questions using Gemini generate API and rank them by cosine similarity.
     Returns top_n questions plus their similarity scores and the raw text response (when available).
@@ -91,10 +91,10 @@ def query_fanout_and_rank(
     payload = {
         "contents": [{"parts": [{"text": system_prompt}, {"text": user_prompt}]}],
         "generationConfig": {
-            "temperature": 0.7,
-            "topK": 40,
-            "topP": 0.95,
-            "maxOutputTokens": 2048,
+            "temperature": temperature,
+            "topK": top_k,
+            "topP": top_p,
+            "maxOutputTokens": max_output_tokens,
         },
     }
 
@@ -197,6 +197,42 @@ def main():
             type="password",
             help="Enter your Gemini API key (kept only in browser session)",
         )
+        
+        # Generation Config Parameters
+        with st.expander("⚙️ Generation Config", expanded=False):
+            temperature = st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.7,
+                step=0.05,
+                help="Controls randomness: lower is more focused, higher is more creative"
+            )
+            top_k = st.number_input(
+                "Top K",
+                min_value=1,
+                max_value=100,
+                value=40,
+                step=1,
+                help="Limits sampling to top K tokens"
+            )
+            top_p = st.slider(
+                "Top P",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.95,
+                step=0.05,
+                help="Nucleus sampling: cumulative probability threshold"
+            )
+            max_output_tokens = st.number_input(
+                "Max Output Tokens",
+                min_value=1,
+                max_value=8196,
+                value=2048,
+                step=128,
+                help="Maximum length of generated response"
+            )
+        
         show_raw = st.checkbox("Show raw model text response")
         submit = st.form_submit_button("Generate")
 
@@ -209,7 +245,7 @@ def main():
             return
 
         with st.spinner("Generating questions and computing similarities..."):
-            result = query_fanout_and_rank(keyword, language, top_n, api_key)
+            result = query_fanout_and_rank(keyword, language, top_n, api_key, temperature, top_k, top_p, max_output_tokens)
 
         if result:
             questions, scores, raw_text = result
